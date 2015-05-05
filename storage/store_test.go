@@ -23,7 +23,6 @@ import (
 	"bytes"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -259,26 +258,6 @@ func TestBootstrapOfNonEmptyStore(t *testing.T) {
 	}
 }
 
-func TestRangeSliceSort(t *testing.T) {
-	defer leaktest.AfterTest(t)
-	var rs RangeSlice
-	for i := 4; i >= 0; i-- {
-		r := &Range{}
-		if err := r.setDesc(&proto.RangeDescriptor{StartKey: proto.Key(fmt.Sprintf("foo%d", i))}); err != nil {
-			t.Fatal(err)
-		}
-		rs = append(rs, r)
-	}
-
-	sort.Sort(rs)
-	for i := 0; i < 5; i++ {
-		expectedKey := proto.Key(fmt.Sprintf("foo%d", i))
-		if !bytes.Equal(rs[i].Desc().StartKey, expectedKey) {
-			t.Errorf("Expected %s, got %s", expectedKey, rs[i].Desc().StartKey)
-		}
-	}
-}
-
 func createRange(s *Store, raftID int64, start, end proto.Key) *Range {
 	desc := &proto.RangeDescriptor{
 		RaftID:   raftID,
@@ -327,8 +306,8 @@ func TestStoreAddRemoveRanges(t *testing.T) {
 	}
 	// Try to add a range with previously-used (but now removed) ID.
 	rng2Dup := createRange(store, 1, proto.Key("a"), proto.Key("b"))
-	if err := store.AddRangeTest(rng2Dup); err != nil {
-		t.Fatal(err)
+	if err := store.AddRangeTest(rng2Dup); err == nil {
+		t.Fatal("expected error inserting a duplicated range")
 	}
 	// Add another range with different key range and then test lookup.
 	rng3 := createRange(store, 3, proto.Key("c"), proto.Key("d"))
@@ -434,10 +413,6 @@ func TestStoreRangeIterator(t *testing.T) {
 	if ec := iter.EstimatedCount(); ec != 7 {
 		t.Errorf("expected 7 remaining; got %d", ec)
 	}
-}
-
-func TestStoreIteratorWithAddAndRemoval(t *testing.T) {
-	defer leaktest.AfterTest(t)
 }
 
 // TestStoreExecuteCmd verifies straightforward command execution
