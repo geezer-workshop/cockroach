@@ -194,26 +194,56 @@ func (e *NotBootstrappedError) Error() string {
 }
 
 // storeRangeSet is an implementation of rangeSet which
-// cycles through a store's rangesByKey btree with mutex locking.
+// cycles through a store's rangesByKey btree.
 type storeRangeSet struct {
-	store *Store
+	store   *Store
+	raftIDs []int64 // Raft IDs of ranges to be visited.
+	visited int     // Number of visited ranges. -1 when Visit() is not being called.
+}
+
+func newStoreRangeSet(store *Store) *storeRangeSet {
+	return &storeRangeSet{
+		store:   store,
+		visited: 0,
+	}
 }
 
 func (rs *storeRangeSet) Visit(visitor func(*Range) bool) {
-	// Hold the lock except when the visitor is called.
+	// Copy the raft IDs to a slice and iterate over the slice so
+	// that we can safely (e.g., no race, no range skip) iterate
+	// over ranges regardless of how BTree is implemented.
+	rs.raftIDs = make([]int64, rs.store.rangesByKey.Len())
+	i := 0
 	rs.store.mu.RLock()
-	defer rs.store.mu.RUnlock()
-	rs.store.rangesByKey.Ascend(func(i btree.Item) bool {
-		rs.store.mu.RUnlock()
-		defer rs.store.mu.RLock()
-		return visitor(i.(*Range))
+	rs.store.rangesByKey.Ascend(func(item btree.Item) bool {
+		rs.raftIDs[i] = item.(*Range).Desc().RaftID
+		i++
+		return true
 	})
+	rs.store.mu.RUnlock()
+
+	rs.visited = 0
+	for _, raftID := range rs.raftIDs {
+		rs.visited++
+		rs.store.mu.RLock()
+		rng, ok := rs.store.ranges[raftID]
+		rs.store.mu.RUnlock()
+		if ok {
+			if !visitor(rng) {
+				break
+			}
+		}
+	}
+	rs.visited = 0
 }
 
-func (rs *storeRangeSet) Count() int {
+func (rs *storeRangeSet) EstimatedCount() int {
 	rs.store.mu.RLock()
 	defer rs.store.mu.RUnlock()
-	return rs.store.rangesByKey.Len()
+	if rs.visited <= 0 {
+		return rs.store.rangesByKey.Len()
+	}
+	return len(rs.raftIDs) - rs.visited
 }
 
 // A Store maintains a map of ranges by start key. A Store corresponds
@@ -334,7 +364,7 @@ func NewStore(ctx StoreContext, eng engine.Engine, nodeDesc *proto.NodeDescripto
 	}
 
 	// Add range scanner and configure with queues.
-	s.scanner = newRangeScanner(ctx.ScanInterval, ctx.ScanMaxIdleTime, &storeRangeSet{s},
+	s.scanner = newRangeScanner(ctx.ScanInterval, ctx.ScanMaxIdleTime, newStoreRangeSet(s),
 		s.updateStoreStatus)
 	s.gcQueue = newGCQueue()
 	s._splitQueue = newSplitQueue(s.db, s.ctx.Gossip)

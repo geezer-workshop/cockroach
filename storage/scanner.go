@@ -53,8 +53,9 @@ type rangeSet interface {
 	// Visit calls the given function for every range in the set btree
 	// until the function returns false.
 	Visit(func(*Range) bool)
-	// Len returns the number of ranges in the set.
-	Count() int
+	// EstimatedCount returns the number of ranges estimated to remain
+	// in the iteration. This value does not need to be exact.
+	EstimatedCount() int
 }
 
 // A storeStats holds statistics over the entire store. Stats is an
@@ -94,7 +95,7 @@ func newRangeScanner(targetInterval, maxIdleTime time.Duration, ranges rangeSet,
 		maxIdleTime:    maxIdleTime,
 		ranges:         ranges,
 		removed:        make(chan *Range, 10),
-		stats:          unsafe.Pointer(&storeStats{RangeCount: ranges.Count()}),
+		stats:          unsafe.Pointer(&storeStats{RangeCount: ranges.EstimatedCount()}),
 		scanFn:         scanFn,
 		completedScan:  sync.NewCond(&sync.Mutex{}),
 	}
@@ -164,7 +165,7 @@ func (rs *rangeScanner) paceInterval(start, now time.Time) time.Duration {
 	if remainingNanos < 0 {
 		remainingNanos = 0
 	}
-	count := rs.ranges.Count()
+	count := rs.ranges.EstimatedCount()
 	if count < 1 {
 		count = 1
 	}
@@ -227,7 +228,7 @@ func (rs *rangeScanner) scanLoop(clock *hlc.Clock, stopper *util.Stopper) {
 		stats := &storeStats{}
 
 		for {
-			if rs.ranges.Count() == 0 {
+			if rs.ranges.EstimatedCount() == 0 {
 				// Just wait without processing any range.
 				if rs.waitAndProcess(start, clock, stopper, stats, nil) {
 					break

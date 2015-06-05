@@ -35,6 +35,7 @@ import (
 type testRangeSet struct {
 	sync.Mutex
 	rangesByKey *btree.BTree
+	visited     int
 }
 
 // newTestRangeSet creates a new range set that has the count number of ranges.
@@ -72,16 +73,21 @@ func (rs *testRangeSet) Visit(visitor func(*Range) bool) {
 	rs.Lock()
 	defer rs.Unlock()
 	rs.rangesByKey.Ascend(func(i btree.Item) bool {
+		rs.visited++
 		rs.Unlock()
 		defer rs.Lock()
 		return visitor(i.(*Range))
 	})
 }
 
-func (rs *testRangeSet) Count() int {
+func (rs *testRangeSet) EstimatedCount() int {
 	rs.Lock()
 	defer rs.Unlock()
-	return rs.rangesByKey.Len()
+	count := rs.rangesByKey.Len() - rs.visited
+	if count < 1 {
+		count = 1
+	}
+	return count
 }
 
 // removeRange removes the i-th range from the range set.
