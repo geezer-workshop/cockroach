@@ -479,12 +479,24 @@ func TestStoreRangeManySplits(t *testing.T) {
 	}
 
 	// Check that we finish splitting in allotted time.
+	expKeys := []proto.Key{}
+	for i := 1; i < 22; i++ {
+		if i%10 == 0 {
+			expKeys = append(expKeys, proto.Key(fmt.Sprintf("\x00\x00meta2db%d:", i/10-1)))
+		}
+		expKeys = append(expKeys, proto.Key(fmt.Sprintf("\x00\x00meta2db%02d", i)))
+	}
+	expKeys = append(expKeys, keys.MakeKey(proto.Key("\x00\x00meta2"), proto.KeyMax))
 	if err := util.IsTrueWithin(func() bool {
 		rows, err := store.DB().Scan(keys.Meta2Prefix, keys.MetaMax, 0)
 		if err != nil {
 			t.Fatalf("failed to scan meta2 keys: %s", err)
 		}
-		return len(rows) == 24
+		var keys []proto.Key
+		for _, r := range rows {
+			keys = append(keys, r.Key)
+		}
+		return reflect.DeepEqual(keys, expKeys)
 	}, 1*time.Second); err != nil {
 		t.Errorf("expected splits not found: %s", err)
 	}
@@ -501,12 +513,29 @@ func TestStoreRangeManySplits(t *testing.T) {
 	}
 
 	// Check the result of splits again.
+	expKeys = []proto.Key{}
+	for i := 1; i < 21; i++ {
+		if i%10 == 0 {
+			expKeys = append(expKeys, proto.Key(fmt.Sprintf("\x00\x00meta2db%d:", i/10-1)))
+		}
+		expKeys = append(expKeys,
+			proto.Key(fmt.Sprintf("\x00\x00meta2db%02d", i)),
+			proto.Key(fmt.Sprintf("\x00\x00meta2db%02d/table", i)),
+			proto.Key(fmt.Sprintf("\x00\x00meta2db%02d/tablf", i)))
+	}
+	expKeys = append(expKeys,
+		proto.Key("\x00\x00meta2db21"),
+		keys.MakeKey(proto.Key("\x00\x00meta2"), proto.KeyMax))
 	if err := util.IsTrueWithin(func() bool {
 		rows, err := store.DB().Scan(keys.Meta2Prefix, keys.MetaMax, 0)
 		if err != nil {
 			t.Fatalf("failed to scan meta2 keys: %s", err)
 		}
-		return len(rows) == 64
+		var keys []proto.Key
+		for _, r := range rows {
+			keys = append(keys, r.Key)
+		}
+		return reflect.DeepEqual(keys, expKeys)
 	}, 1*time.Second); err != nil {
 		t.Errorf("expected splits not found: %s", err)
 	}

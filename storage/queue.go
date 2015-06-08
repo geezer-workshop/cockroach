@@ -205,8 +205,8 @@ func (bq *baseQueue) processLoop(clock *hlc.Clock, stopper *util.Stopper) {
 
 		for {
 			select {
-			// Incoming ranges set the next time to process in the event that
-			// there were previously no ranges in the queue.
+			// Incoming signal sets the next time to process if there were previously
+			// no ranges in the queue.
 			case <-bq.incoming:
 				if nextTime == nil {
 					// When the first range is added, wake up immediately. This is
