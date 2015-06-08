@@ -17,7 +17,10 @@
 
 package log
 
-import "golang.org/x/net/context"
+import (
+	"golang.org/x/net/context"
+	"strings"
+)
 
 // Log Level Enum.
 type Level int
@@ -38,6 +41,19 @@ var levels = [...]string{
 
 func (level Level) String() string {
 	return levels[level]
+}
+
+func LevelFromString(level string) Level {
+	switch strings.ToUpper(strings.TrimSpace(level)) {
+	case "FATAL":
+		return FATAL
+	case "ERROR":
+		return ERROR
+	case "WARNING":
+		return WARNING
+	default:
+		return INFO
+	}
 }
 
 func init() {

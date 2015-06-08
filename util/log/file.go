@@ -149,14 +149,7 @@ func verifyFileInfo(info os.FileInfo) (Level, error) {
 		return INFO, util.Errorf("not a log file")
 	}
 
-	switch matches[1] {
-	case "ERRROR":
-		return ERROR, nil
-	case "WARNING":
-		return WARNING, nil
-	default:
-		return INFO, nil
-	}
+	return LevelFromString(matches[1]), nil
 }
 
 func verifyFile(filename string) error {
