@@ -66,7 +66,7 @@ func MakeTableMetadataKey(namespaceID uint32, tableName string) proto.Key {
 	k := make([]byte, 0, len(TableMetadataPrefix)+10+len(tableName))
 	k = append(k, TableMetadataPrefix...)
 	k = encoding.EncodeUvarint(k, uint64(namespaceID))
-	k = append(k, []byte(tableName)...)
+	k = append(k, tableName...)
 	return k
 }
 
