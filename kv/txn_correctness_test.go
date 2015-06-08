@@ -34,7 +34,6 @@ import (
 	"github.com/cockroachdb/cockroach/util"
 	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/cockroachdb/cockroach/util/retry"
-	gogoproto "github.com/gogo/protobuf/proto"
 )
 
 // setCorrectnessRetryOptions sets client for aggressive retries with a
@@ -58,7 +57,15 @@ func setCorrectnessRetryOptions(lSender *retryableLocalSender) {
 }
 
 type runner interface {
-	Run(calls ...client.Call) error
+	DelRange(begin, end interface{}) error
+	Get(key interface{}) (client.KeyValue, error)
+	Inc(key interface{}, value int64) (client.KeyValue, error)
+	Scan(begin, end interface{}, maxRows int64) ([]client.KeyValue, error)
+}
+
+type txRunner interface {
+	runner
+	Commit(b *client.Batch) error
 }
 
 // The following structs and methods provide a mechanism for verifying
@@ -145,78 +152,68 @@ func (c *cmd) String() string {
 
 // readCmd reads a value from the db and stores it in the env.
 func readCmd(c *cmd, db runner, t *testing.T) error {
-	call := client.Get(c.getKey())
-	r := call.Reply.(*proto.GetResponse)
-	if err := db.Run(call); err != nil {
+	r, err := db.Get(c.getKey())
+	if err != nil {
 		return err
 	}
 	if r.Value != nil {
-		c.env[c.key] = r.Value.GetInteger()
-		c.debug = fmt.Sprintf("[%d ts=%d]", r.Value.GetInteger(), r.Timestamp.Logical)
+		c.env[c.key] = r.ValueInt()
+		c.debug = fmt.Sprintf("[%d ts=%d]", r.ValueInt(), r.Timestamp)
 	}
 	return nil
 }
 
 // deleteRngCmd deletes the range of values from the db from [key, endKey).
 func deleteRngCmd(c *cmd, db runner, t *testing.T) error {
-	return db.Run(client.DeleteRange(c.getKey(), c.getEndKey()))
+	return db.DelRange(c.getKey(), c.getEndKey())
 }
 
 // scanCmd reads the values from the db from [key, endKey).
 func scanCmd(c *cmd, db runner, t *testing.T) error {
-	call := client.Scan(c.getKey(), c.getEndKey(), 0)
-	r := call.Reply.(*proto.ScanResponse)
-	if err := db.Run(call); err != nil {
+	rows, err := db.Scan(c.getKey(), c.getEndKey(), 0)
+	if err != nil {
 		return err
 	}
 	var vals []string
 	keyPrefix := []byte(fmt.Sprintf("%d.", c.historyIdx))
-	for _, kv := range r.Rows {
+	for _, kv := range rows {
 		key := bytes.TrimPrefix(kv.Key, keyPrefix)
-		c.env[string(key)] = kv.Value.GetInteger()
-		vals = append(vals, fmt.Sprintf("%d", kv.Value.GetInteger()))
+		c.env[string(key)] = kv.ValueInt()
+		vals = append(vals, fmt.Sprintf("%d", kv.ValueInt()))
 	}
-	c.debug = fmt.Sprintf("[%s ts=%d]", strings.Join(vals, " "), r.Timestamp.Logical)
+	c.debug = fmt.Sprintf("[%s]", strings.Join(vals, " "))
 	return nil
 }
 
 // incCmd adds one to the value of c.key in the env and writes
 // it to the db. If c.key isn't in the db, writes 1.
 func incCmd(c *cmd, db runner, t *testing.T) error {
-	call := client.Increment(c.getKey(), 1)
-	r := call.Reply.(*proto.IncrementResponse)
-	if err := db.Run(call); err != nil {
+	r, err := db.Inc(c.getKey(), 1)
+	if err != nil {
 		return err
 	}
-	c.env[c.key] = r.NewValue
-	c.debug = fmt.Sprintf("[%d ts=%d]", r.NewValue, r.Timestamp.Logical)
+	c.env[c.key] = r.ValueInt()
+	c.debug = fmt.Sprintf("[%d]", r.ValueInt())
 	return nil
 }
 
-// sumCmd sums the values of all keys read during the transaction
-// and writes the result to the db.
+// sumCmd sums the values of all keys != c.key read during the transaction and
+// writes the result to the db.
 func sumCmd(c *cmd, db runner, t *testing.T) error {
 	sum := int64(0)
-	for _, v := range c.env {
-		sum += v
+	for k, v := range c.env {
+		if k != c.key {
+			sum += v
+		}
 	}
-	r := &proto.PutResponse{}
-	err := db.Run(client.Call{
-		Args: &proto.PutRequest{
-			RequestHeader: proto.RequestHeader{Key: c.getKey()},
-			Value:         proto.Value{Integer: gogoproto.Int64(sum)},
-		},
-		Reply: r})
-	c.debug = fmt.Sprintf("[%d ts=%d]", sum, r.Timestamp.Logical)
+	r, err := db.Inc(c.getKey(), sum)
+	c.debug = fmt.Sprintf("[%d ts=%d]", sum, r.Timestamp)
 	return err
 }
 
 // commitCmd commits the transaction.
 func commitCmd(c *cmd, db runner, t *testing.T) error {
-	r := &proto.EndTransactionResponse{}
-	err := db.Run(client.Call{Args: &proto.EndTransactionRequest{Commit: true}, Reply: r})
-	c.debug = fmt.Sprintf("[ts=%d]", r.Timestamp.Logical)
-	return err
+	return db.(txRunner).Commit(&client.Batch{})
 }
 
 // cmdDict maps from command name to function implementing the command.
@@ -475,7 +472,7 @@ func areHistoriesSymmetric(txns []string) bool {
 	return true
 }
 
-func (hv *historyVerifier) run(isolations []proto.IsolationType, db *client.KV, t *testing.T) {
+func (hv *historyVerifier) run(isolations []proto.IsolationType, db *client.DB, t *testing.T) {
 	log.Infof("verifying all possible histories for the %q anomaly", hv.name)
 	priorities := make([]int32, len(hv.txns))
 	for i := 0; i < len(hv.txns); i++ {
@@ -506,7 +503,7 @@ func (hv *historyVerifier) run(isolations []proto.IsolationType, db *client.KV, 
 }
 
 func (hv *historyVerifier) runHistory(historyIdx int, priorities []int32,
-	isolations []proto.IsolationType, cmds []*cmd, db *client.KV, t *testing.T) error {
+	isolations []proto.IsolationType, cmds []*cmd, db *client.DB, t *testing.T) error {
 	plannedStr := historyString(cmds)
 	if log.V(1) {
 		log.Infof("attempting iso=%v pri=%v history=%s", isolations, priorities, plannedStr)
@@ -565,15 +562,16 @@ func (hv *historyVerifier) runHistory(historyIdx int, priorities []int32,
 }
 
 func (hv *historyVerifier) runTxn(txnIdx int, priority int32,
-	isolation proto.IsolationType, cmds []*cmd, db *client.KV, t *testing.T) error {
+	isolation proto.IsolationType, cmds []*cmd, db *client.DB, t *testing.T) error {
 	var retry int
 	txnName := fmt.Sprintf("txn%d", txnIdx)
-	txnOpts := &client.TransactionOptions{
-		Name:         txnName,
-		Isolation:    isolation,
-		UserPriority: -priority,
-	}
-	err := db.RunTransaction(txnOpts, func(txn *client.Txn) error {
+	err := db.Tx(func(tx *client.Tx) error {
+		tx.SetDebugName(txnName)
+		if isolation == proto.SNAPSHOT {
+			tx.SetSnapshotIsolation()
+		}
+		tx.InternalSetPriority(priority)
+
 		env := map[string]int64{}
 		// TODO(spencer): restarts must create additional histories. They
 		// look like: given the current partial history and a restart on
@@ -592,7 +590,7 @@ func (hv *historyVerifier) runTxn(txnIdx int, priority int32,
 		}
 		for i := range cmds {
 			cmds[i].env = env
-			if err := hv.runCmd(txn, txnIdx, retry, i, cmds, t); err != nil {
+			if err := hv.runCmd(tx, txnIdx, retry, i, cmds, t); err != nil {
 				return err
 			}
 		}
@@ -622,7 +620,7 @@ func checkConcurrency(name string, isolations []proto.IsolationType, txns []stri
 	s := createTestDB(t)
 	defer s.Stop()
 	setCorrectnessRetryOptions(s.lSender)
-	verifier.run(isolations, s.DB.InternalKV(), t)
+	verifier.run(isolations, s.DB, t)
 }
 
 // The following tests for concurrency anomalies include documentation
