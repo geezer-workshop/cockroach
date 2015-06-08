@@ -158,9 +158,9 @@ var (
 	// SchemaPrefix specifies key prefixes for schema definitions.
 	SchemaPrefix = MakeKey(SystemPrefix, proto.Key("schema"))
 	// NamespaceMetadataPrefix is the key prefix for all namespace metadata.
-	NamespaceMetadataPrefix = MakeKey(SystemPrefix, proto.Key("ns-"))
+	NamespaceMetadataPrefix = MakeKey(SystemPrefix, proto.Key("ns"))
 	// TableMetadataPrefix is the key prefix for all table metadata.
-	TableMetadataPrefix = MakeKey(SystemPrefix, proto.Key("tbl-"))
+	TableMetadataPrefix = MakeKey(SystemPrefix, proto.Key("tbl"))
 	// StoreIDGenerator is the global store ID generator sequence.
 	StoreIDGenerator = MakeKey(SystemPrefix, proto.Key("store-idgen"))
 	// RangeTreeRoot specifies the root range in the range tree.
